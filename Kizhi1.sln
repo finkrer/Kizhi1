@@ -1,0 +1,22 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KizhiPart1", "KizhiPart1\KizhiPart1.csproj", "{B0A9602B-61C8-4007-BB9C-1E2B2BBE88CC}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KizhiPart2", "KizhiPart2\KizhiPart2.csproj", "{9480357B-9ED1-42A1-AD1B-86A46AA65375}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{B0A9602B-61C8-4007-BB9C-1E2B2BBE88CC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B0A9602B-61C8-4007-BB9C-1E2B2BBE88CC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B0A9602B-61C8-4007-BB9C-1E2B2BBE88CC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B0A9602B-61C8-4007-BB9C-1E2B2BBE88CC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9480357B-9ED1-42A1-AD1B-86A46AA65375}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9480357B-9ED1-42A1-AD1B-86A46AA65375}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9480357B-9ED1-42A1-AD1B-86A46AA65375}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9480357B-9ED1-42A1-AD1B-86A46AA65375}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
