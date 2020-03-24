@@ -10,19 +10,30 @@ namespace KizhiPart1
     public interface IInterpreterCommandInterface
     {
         TextWriter Writer { get; }
-        Dictionary<string, int> Variables { get; }
-        void CheckIfSet(string name);
+    }
+
+    public class Memory
+    {
+        public readonly Dictionary<string, int> Variables = new Dictionary<string, int>();
+
+        public void CheckIfSet(string name)
+        {
+            if (!Variables.ContainsKey(name))
+                throw new ArgumentException("Переменная отсутствует в памяти");
+        }
     }
     
     public abstract class Command
     {
         public readonly string Name;
-        public readonly IInterpreterCommandInterface Interpreter;
+        protected readonly IInterpreterCommandInterface Interpreter;
+        protected readonly Memory Memory;
         public abstract void Invoke(string[] args);
 
-        protected Command(IInterpreterCommandInterface interpreter)
+        protected Command(IInterpreterCommandInterface interpreter, Memory memory)
         {
             Interpreter = interpreter;
+            Memory = memory;
             Name = GetType().Name.ToLower();
         }
     }
@@ -34,52 +45,52 @@ namespace KizhiPart1
 
     public class Set : Command
     {
+        public Set(IInterpreterCommandInterface interpreter, Memory memory) : base(interpreter, memory) { }
+
         public override void Invoke(string[] args)
         {
             var variable = Parsing.ReadVariableName(args[0]);
             var value = Parsing.ReadValue(args[1]);
-            Interpreter.Variables[variable] = value;
+            Memory.Variables[variable] = value;
         }
-
-        public Set(IInterpreterCommandInterface interpreter) : base(interpreter) { }
     }
     
     public class Sub : Command
     {
+        public Sub(IInterpreterCommandInterface interpreter, Memory memory) : base(interpreter, memory) { }
+
         public override void Invoke(string[] args)
         {
             var variable = Parsing.ReadVariableName(args[0]);
-            Interpreter.CheckIfSet(variable);
+            Memory.CheckIfSet(variable);
             var value = Parsing.ReadValue(args[1]);
-            Interpreter.Variables[variable] -= value;
+            Memory.Variables[variable] -= value;
         }
-
-        public Sub(IInterpreterCommandInterface interpreter) : base(interpreter) { }
     }
     
     public class Print : Command
     {
+        public Print(IInterpreterCommandInterface interpreter, Memory memory) : base(interpreter, memory) { }
+
         public override void Invoke(string[] args)
         {
             var variable = Parsing.ReadVariableName(args[0]);
-            Interpreter.CheckIfSet(variable);
-            var value = Interpreter.Variables[variable];
+            Memory.CheckIfSet(variable);
+            var value = Memory.Variables[variable];
             Interpreter.Writer.WriteLine(value);
         }
-
-        public Print(IInterpreterCommandInterface interpreter) : base(interpreter) { }
     }
     
     public class Rem : Command
     {
+        public Rem(IInterpreterCommandInterface interpreter, Memory memory) : base(interpreter, memory) { }
+
         public override void Invoke(string[] args)
         {
             var variable = Parsing.ReadVariableName(args[0]);
-            Interpreter.CheckIfSet(variable);
-            Interpreter.Variables.Remove(variable);
+            Memory.CheckIfSet(variable);
+            Memory.Variables.Remove(variable);
         }
-
-        public Rem(IInterpreterCommandInterface interpreter) : base(interpreter) { }
     }
 
     public static class Parsing
@@ -113,26 +124,23 @@ namespace KizhiPart1
     public class Interpreter : IInterpreterCommandInterface
     {
         private readonly TextWriter _writer;
-        private readonly Dictionary<string, int> _variables = new Dictionary<string, int>();
-        private CommandList _commands;
+        private readonly CommandList _commands;
+        private readonly Memory _memory = new Memory();
         TextWriter IInterpreterCommandInterface.Writer => _writer;
-        Dictionary<string, int> IInterpreterCommandInterface.Variables => _variables;
 
         public Interpreter(TextWriter writer)
         {
             _writer = writer;
-            InitializeCommands();
+            _commands = new CommandList();
+            foreach (var command in FindCommands()) 
+                _commands.Add(command);
         }
 
-        private void InitializeCommands()
+        private IEnumerable<Command> FindCommands()
         {
-            _commands = new CommandList
-            {
-                new Set(this),
-                new Sub(this),
-                new Print(this),
-                new Rem(this)
-            };
+            return typeof(Command).Assembly.GetTypes()
+                .Where(t => t.IsSubclassOf(typeof(Command)) && !t.IsAbstract)
+                .Select(t => (Command) Activator.CreateInstance(t, this, _memory));
         }
 
         public void ExecuteLine(string command)
@@ -160,12 +168,6 @@ namespace KizhiPart1
             if (!source.Contains(commandName))
                 throw new ArgumentException("Команда не содержится в списке допустимых команд");
             return source[commandName];
-        }
-
-        void IInterpreterCommandInterface.CheckIfSet(string variable)
-        {
-            if (!_variables.ContainsKey(variable))
-                throw new ArgumentException("Переменная отсутствует в памяти");
         }
     }
 }

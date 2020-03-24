@@ -1,214 +1,305 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace KizhiPart2
 {
-    public enum Mode
+    public interface IInterpreterCommandInterface
     {
-        Normal,
-        Code,
-        Function
+        TextWriter Writer { get; }
+        Memory Memory { get; }
+        Parser Parser { get; }
+        InterpreterMode CurrentMode { get; set; }
+        IList<string> CurrentFunction { get; set; }
+        void ExecuteCommands(IEnumerable<string> commands);
     }
     
-    public class Interpreter
+    public class Memory
     {
-        private readonly TextWriter _writer;
-        private Dictionary<string, Action<IList<string>>> _commands;
-        private Dictionary<string, Action<IList<string>>> _interpreterCommands;
-        private readonly Dictionary<string, int> _variables = new Dictionary<string, int>();
-        private readonly Dictionary<string, IList<string>> _functions = new Dictionary<string, IList<string>>();
-        private string[] _code;
-        private Mode _currentMode = Mode.Normal;
-        private string _currentFunction;
-        private readonly string _indent = new string(' ', 4);
+        public readonly Dictionary<string, int> Variables = new Dictionary<string, int>();
+        public readonly Dictionary<string, IList<string>> Functions = new Dictionary<string, IList<string>>();
+        public readonly List<string> Code = new List<string>();
+
+        public void CheckIfSet(string name)
+        {
+            if (!Variables.ContainsKey(name))
+                throw new ArgumentException("Переменная отсутствует в памяти");
+        }
+    }
+    
+    public abstract class Command
+    {
+        public readonly string Name;
+        protected readonly IInterpreterCommandInterface Interpreter;
+        protected Memory Memory => Interpreter.Memory;
+        protected Parser Parser => Interpreter.Parser;
+        protected TextWriter Writer => Interpreter.Writer;
+        public abstract void Invoke(string[] args);
+
+        protected Command(IInterpreterCommandInterface interpreter)
+        {
+            Interpreter = interpreter;
+            Name = GetName();
+        }
+
+        private string GetName()
+        {
+            //class CommandName => "command name"
+            var className = GetType().Name;
+            var words = Regex.Split(className, @"(?<!^)(?=[A-Z])").Select(s => s.ToLowerInvariant());
+            return string.Join(' ', words);
+        }
+    }
+    public class CommandList : KeyedCollection<string, Command>
+    {
+        protected override string GetKeyForItem(Command item) => item.Name;
+    }
+    
+    public class Set : Command
+    {
+        public Set(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args)
+        {
+            var variable = Parser.ReadName(args[0]);
+            var value = Parser.ReadValue(args[1]);
+            Memory.Variables[variable] = value;
+        }
+    }
+    
+    public class Sub : Command
+    {
+        public Sub(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args)
+        {
+            var variable = Parser.ReadName(args[0]);
+            Memory.CheckIfSet(variable);
+            var value = Parser.ReadValue(args[1]);
+            Memory.Variables[variable] -= value;
+        }
+    }
+    
+    public class Print : Command
+    {
+        public Print(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args)
+        {
+            var variable = Parser.ReadName(args[0]);
+            Memory.CheckIfSet(variable);
+            var value = Memory.Variables[variable];
+            Writer.WriteLine(value);
+        }
+    }
+    
+    public class Rem : Command
+    {
+        public Rem(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args)
+        {
+            var variable = Parser.ReadName(args[0]);
+            Memory.CheckIfSet(variable);
+            Memory.Variables.Remove(variable);
+        }
+    }
+    
+    public class Def : Command
+    {
+        public Def(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args)
+        {
+            var name = Parser.ReadName(args[0]);
+            if (Memory.Functions.ContainsKey(name))
+                throw new ArgumentException($"Функция {name} уже определена");
+            Interpreter.CurrentFunction = new List<string>();
+            Memory.Functions.Add(name, Interpreter.CurrentFunction);
+        }
+    }
+    
+    public class Call : Command
+    {
+        public Call(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args)
+        {
+            var name = Parser.ReadName(args[0]);
+            if (!Memory.Functions.ContainsKey(name))
+                throw new ArgumentException($"Функция {name} не определена");
+            Interpreter.ExecuteCommands(Memory.Functions[name]);
+        }
+    }
+    
+    public class SetCode : Command
+    {
+        public SetCode(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args) => 
+            Interpreter.CurrentMode = InterpreterMode.WaitingForCode;
+    }
+    
+    public class EndSetCode : Command
+    {
+        public EndSetCode(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args) => 
+            Interpreter.CurrentMode = InterpreterMode.Normal;
+    }
+    
+    public class Run : Command
+    {
+        public Run(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args)
+        {
+            
+        }
+    }
+
+    public class Parser
+    {
+        private readonly Regex _commandRegex;
+        
+        public Parser(CommandList possibleCommands)
+        {
+            var names = possibleCommands.Select(c => c.Name).OrderByDescending(n => n.Length);
+            _commandRegex = new Regex($@"^(?<name>{string.Join('|', names)})(?:\s(?<args>\S+))*");
+        }
+        
+        public (string, string[]) GetCommandAndArgs(string line)
+        {
+            var match = _commandRegex.Match(line);
+            if (!match.Success)
+                throw new ArgumentException("Команда не распознана");
+            var commandName = match.Groups["name"].Value;
+            var args = match.Groups["args"].Captures.Select(c => c.Value).ToArray();
+            return (commandName, args);
+        }
+        
+        public string ReadName(string input)
+        {
+            if (!Regex.IsMatch(input, @"^[a-zA-Z]+$"))
+                throw new ArgumentException("Название переменной должно состоять из букв английского" +
+                                            "алфавита");
+            return input;
+        }
+
+        public int ReadValue(string input)
+        {
+            if (!int.TryParse(input, out var result) || result <= 0)
+                throw new ArgumentException("Значение должно быть натуральным числом");
+            return result;
+        }
+    }
+
+    public enum InterpreterMode
+    {
+        Normal,
+        WaitingForCode,
+        ParsingFunction
+    }
+
+    public class Interpreter : IInterpreterCommandInterface
+    {
+        private readonly TextWriter writer;
+        private IList<string> currentFunction;
+        private CommandList commands;
+        private readonly Memory memory = new Memory();
+        private Parser parser;
+        private InterpreterMode currentMode = InterpreterMode.Normal;
+        private readonly string indent = new string(' ', 4);
+        TextWriter IInterpreterCommandInterface.Writer => writer;
+        Memory IInterpreterCommandInterface.Memory => memory;
+        Parser IInterpreterCommandInterface.Parser => parser;
+        
+
+        InterpreterMode IInterpreterCommandInterface.CurrentMode
+        {
+            get => currentMode;
+            set => currentMode = value;
+        }
+        IList<string> IInterpreterCommandInterface.CurrentFunction
+        {
+            get => currentFunction;
+            set => currentFunction = value;
+        }
 
         public Interpreter(TextWriter writer)
         {
-            _writer = writer;
-            InitializeCommands();
+            this.writer = writer;
+            commands = new CommandList();
+            foreach (var command in FindCommands())
+                commands.Add(command);
+            parser = new Parser(commands);
         }
 
-        private void InitializeCommands()
+        private IEnumerable<Command> FindCommands()
         {
-            _commands = new Dictionary<string, Action<IList<string>>>
-            {
-                ["set"] = Set,
-                ["sub"] = Sub,
-                ["print"] = Print,
-                ["rem"] = Rem,
-                ["def"] = Def,
-                ["call"] = Call
-            };
-
-            _interpreterCommands = new Dictionary<string, Action<IList<string>>>
-            {
-                ["set"] = SetMode,
-                ["end"] = EndMode,
-                ["run"] = Run
-            };
+            return typeof(Command).Assembly.GetTypes()
+                .Where(t => t.IsSubclassOf(typeof(Command)) && !t.IsAbstract)
+                .Select(t => (Command) Activator.CreateInstance(t, this));
         }
 
         public void ExecuteLine(string command)
         {
             try
             {
-                ExecuteInterpreterCommand(command);
+                TryExecuteLine(command);
             }
             catch (ArgumentException e)
             {
-                _writer.WriteLine(e.Message);
+                writer.WriteLine(e.Message);
             }
         }
 
-        private void ExecuteInterpreterCommand(string command)
+        void IInterpreterCommandInterface.ExecuteCommands(IEnumerable<string> lines)
         {
-            switch (_currentMode)
+            foreach (var line in lines)
+                ExecuteRegularCommand(line);
+        }
+
+        private void ExecuteRegularCommand(string line)
+        {
+            ExecuteCommand(line, commands);
+        }
+
+        private void TryExecuteLine(string line)
+        {
+            if (!(currentFunction is null))
+                ProcessFunctionLine(line);
+            else
+                ExecuteRegularCommand(line);
+        }
+
+        private void ExecuteCommand(string line, CommandList source)
+        {
+            var (commandName, args) = parser.GetCommandAndArgs(line);
+            var command = GetCommand(commandName, source);
+            command.Invoke(args);
+        }
+
+        private void ProcessFunctionLine(string line)
+        {
+            if (line.StartsWith(indent))
+                currentFunction.Add(line.Substring(indent.Length));
+            else
             {
-                case Mode.Normal:
-                    ExecuteCommand(command, _interpreterCommands);
-                    break;
-                case Mode.Code:
-                    _code = command.Split();
-                    break;
+                currentFunction = null;
+                ExecuteRegularCommand(line);
             }
         }
-
-        private void SetMode(IList<string> args)
+        
+        private static Command GetCommand(string commandName,
+            CommandList source)
         {
-            var newMode = ReadMode(args[0]);
-            _currentMode = newMode;
-        }
-
-        private void EndMode(IList<string> args)
-        {
-            var mode = ReadMode(args[1]);
-            if (_currentMode == mode)
-                _currentMode = Mode.Normal;
-            else throw new ArgumentException("Попытка завершить режим, который не запущен");
-        }
-
-        private void Run(IList<string> args)
-        {
-            if (_code is null)
-                throw new ArgumentException("Не задан код для запуска");
-            ExecuteCode(_code);
-        }
-
-        private void ExecuteCode(IList<string> source)
-        {
-            foreach (var line in source)
-                switch (_currentMode)
-                {
-                    case Mode.Normal:
-                        ExecuteCommand(line, _commands);
-                        break;
-                    case Mode.Function:
-                        if (line.StartsWith(_indent))
-                            _functions[_currentFunction].Add(line);
-                        else
-                        {
-                            _currentMode = Mode.Normal;
-                            _currentFunction = null;
-                            goto case Mode.Normal;
-                        }
-                        break;
-                }
-        }
-
-        private static Mode ReadMode(string name)
-        {
-            if (!Enum.TryParse(name, true, out Mode mode))
-                throw new ArgumentException("Такого режима не существует");
-            return mode;
-        }
-
-        private static void ExecuteCommand(string command, IReadOnlyDictionary<string, Action<IList<string>>> source)
-        {
-            var tokens = command.Split(' ');
-            if (tokens.Length < 1)
-                throw new ArgumentException("Нужно указать название команды");
-            var commandName = tokens[0];
-            var args = tokens.Skip(1).ToArray();
-
-            var action = GetCommandAction(commandName, source);
-            action.Invoke(args);
-        }
-
-        private void Set(IList<string> args)
-        {
-            var variable = ReadName(args[0]);
-            var value = ReadValue(args[1]);
-            _variables[variable] = value;
-        }
-
-        private void Sub(IList<string> args)
-        {
-            var variable = ReadName(args[0]);
-            CheckIfSet(variable);
-            var value = ReadValue(args[1]);
-            _variables[variable] -= value;
-        }
-
-        private void Print(IList<string> args)
-        {
-            var variable = ReadName(args[0]);
-            CheckIfSet(variable);
-            _writer.WriteLine(_variables[variable]);
-        }
-
-        private void Rem(IList<string> args)
-        {
-            var variable = ReadName(args[0]);
-            CheckIfSet(variable);
-            _variables.Remove(variable);
-        }
-
-        private void Def(IList<string> args)
-        {
-            var name = ReadName(args[0]);
-            _currentFunction = name;
-            if (_functions.ContainsKey(name))
-                throw new ArgumentException($"Функция {name} уже определена");
-            _functions.Add(name, new List<string>());
-        }
-
-        private void Call(IList<string> args)
-        {
-            var name = ReadName(args[0]);
-            if (!_functions.TryGetValue(name, out var function))
-                throw new ArgumentException($"Функция с именем {name} не определена");
-            ExecuteCode(function);
-        }
-
-        private static Action<IList<string>> GetCommandAction(string commandName,
-            IReadOnlyDictionary<string, Action<IList<string>>> source)
-        {
-            if (!source.TryGetValue(commandName, out var result))
+            if (!source.Contains(commandName))
                 throw new ArgumentException("Команда не содержится в списке допустимых команд");
-            return result;
-        }
-
-        private static string ReadName(string arg)
-        {
-            if (!Regex.IsMatch(arg, @"^[a-zA-Z]+$"))
-                throw new ArgumentException("Название должно состоять из букв английского алфавита");
-            return arg;
-        }
-
-        private static int ReadValue(string arg)
-        {
-            if (!int.TryParse(arg, out var result) || result <= 0)
-                throw new ArgumentException("Значение должно быть натуральным числом");
-            return result;
-        }
-
-        private void CheckIfSet(string variable)
-        {
-            if (!_variables.ContainsKey(variable))
-                throw new ArgumentException("Переменная отсутствует в памяти");
+            return source[commandName];
         }
     }
 }
