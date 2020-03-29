@@ -5,7 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 
-namespace KizhiPart2
+namespace KizhiPart3
 {
     public interface IInterpreterCommandInterface
     {
@@ -14,14 +14,17 @@ namespace KizhiPart2
         Parser Parser { get; }
         InterpreterState CurrentState { get; set; }
         Stack<ExecutionContext> Stack { get; }
+        void Run(RunOption option);
     }
     
     public class Memory
     {
         public readonly Dictionary<string, int> Variables = new Dictionary<string, int>();
-        public readonly Dictionary<string, IList<string>> Functions = new Dictionary<string, IList<string>>();
-        public IList<string> Code { get; set; }
-        public IList<string> CurrentFunction { get; set; }
+        public readonly Dictionary<string, int> VariableLastChangePosition = new Dictionary<string, int>();
+        public readonly Dictionary<string, ExecutionContext> Functions = new Dictionary<string, ExecutionContext>();
+        public readonly HashSet<int> Breakpoints = new HashSet<int>();
+        public ExecutionContext Code { get; set; }
+        public ExecutionContext CurrentFunction { get; set; }
 
         public void CheckIfSet(string name)
         {
@@ -68,6 +71,7 @@ namespace KizhiPart2
             var variable = Parser.ReadName(args[0]);
             var value = Parser.ReadValue(args[1]);
             Memory.Variables[variable] = value;
+            Memory.VariableLastChangePosition[variable] = Interpreter.Stack.Peek().AbsolutePosition;
         }
     }
     
@@ -81,6 +85,7 @@ namespace KizhiPart2
             Memory.CheckIfSet(variable);
             var value = Parser.ReadValue(args[1]);
             Memory.Variables[variable] -= value;
+            Memory.VariableLastChangePosition[variable] = Interpreter.Stack.Peek().AbsolutePosition;
         }
     }
     
@@ -106,6 +111,7 @@ namespace KizhiPart2
             var variable = Parser.ReadName(args[0]);
             Memory.CheckIfSet(variable);
             Memory.Variables.Remove(variable);
+            Memory.VariableLastChangePosition.Remove(variable);
         }
     }
     
@@ -115,11 +121,13 @@ namespace KizhiPart2
 
         public override void Invoke(string[] args)
         {
-            var name = Parser.ReadName(args[0]);
-            if (Memory.Functions.ContainsKey(name))
-                throw new ArgumentException($"Функция {name} уже определена");
-            Memory.CurrentFunction = new List<string>();
-            Memory.Functions.Add(name, Memory.CurrentFunction);
+            var context = Interpreter.Stack.Peek();
+            do
+            {
+                context.InstructionPointer++;
+            } while (!context.EndReached && context.CurrentStatement.StartsWith(Parser.Indent));
+
+            context.InstructionPointer--;
         }
     }
     
@@ -132,9 +140,8 @@ namespace KizhiPart2
             var name = Parser.ReadName(args[0]);
             if (!Memory.Functions.ContainsKey(name))
                 throw new ArgumentException($"Функция {name} не определена");
-            var code = Memory.Functions[name];
-            var newContext = new ExecutionContext(name, code);
-            Interpreter.Stack.Push(newContext);
+            var function = Memory.Functions[name];
+            Interpreter.Stack.Push(function);
         }
     }
     
@@ -158,16 +165,81 @@ namespace KizhiPart2
     {
         public Run(IInterpreterCommandInterface interpreter) : base(interpreter) { }
 
-        public override void Invoke(string[] args) => 
-            Interpreter.Stack.Push(new ExecutionContext("Main", Memory.Code));
+        public override void Invoke(string[] args)
+        {
+            if (Interpreter.Stack.Count == 0) 
+                Interpreter.Stack.Push(Memory.Code);
+
+            Interpreter.Run(RunOption.Run);
+        }
     }
+    
+    public class AddBreak : Command
+    {
+        public AddBreak(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args)
+        {
+            var line = Parser.ReadValue(args[0]);
+            Memory.Breakpoints.Add(line);
+        }
+    }
+    
+    public class StepOver : Command
+    {
+        public StepOver(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args)
+        {
+            if (Interpreter.Stack.Count == 0) 
+                Interpreter.Stack.Push(Memory.Code);
+            Interpreter.Run(RunOption.StepOver);
+        }
+    }
+    
+    public class Step : Command
+    {
+        public Step(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args)
+        {
+            if (Interpreter.Stack.Count == 0) 
+                Interpreter.Stack.Push(Memory.Code);
+            Interpreter.Run(RunOption.Step);
+        }
+    }
+    
+    public class PrintMem : Command
+    {
+        public PrintMem(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args)
+        {
+            foreach (var variable in Memory.Variables.Keys)
+                Writer.WriteLine($"{variable} {Memory.Variables[variable]} " +
+                                 $"{Memory.VariableLastChangePosition[variable]}");
+        }
+    }
+    
+    public class PrintTrace : Command
+    {
+        public PrintTrace(IInterpreterCommandInterface interpreter) : base(interpreter) { }
+
+        public override void Invoke(string[] args)
+        {
+            var stack = Interpreter.Stack.ToArray();
+            for (var i = 0; i < stack.Length - 1; i++)
+                Writer.WriteLine($"{stack[i + 1].AbsolutePosition - 1} {stack[i].Name}");
+        }
+    }
+
     #endregion
 
     public class Parser
     {
         private readonly CommandList commands;
         private readonly Regex commandRegex;
-        private static readonly string Indent = new string(' ', 4);
+        public static readonly string Indent = new string(' ', 4);
 
         public Parser(CommandList commands)
         {
@@ -214,27 +286,29 @@ namespace KizhiPart2
             return true;
         }
 
-        public void FindFunctions(IList<string> code, Memory memory, out IList<string> remainingCode)
+        public void FindFunctions(IList<string> code, Memory memory, int lineOffset)
         {
-            remainingCode = new List<string>();
-            foreach (var line in code)
+            for (var i = 0; i < code.Count; i++)
             {
+                var line = code[i];
                 if (memory.CurrentFunction is null)
                 {
                     var (command, args) = GetCommandAndArgs(line);
-                    if (command == "def") 
-                        commands["def"].Invoke(args);
-                    else
-                        remainingCode.Add(line);
+                    if (command == "def")
+                    {
+                        var name = ReadName(args[0]);
+                        if (memory.Functions.ContainsKey(name))
+                            throw new ArgumentException($"Функция {name} уже определена");
+                        memory.CurrentFunction = new ExecutionContext(name, new List<string>(), i + 1);
+                        memory.Functions.Add(name, memory.CurrentFunction);
+                    }
+
                     continue;
                 }
                 if (TryDedent(line, out var dedentedLine))
-                    memory.CurrentFunction.Add(dedentedLine);
+                    memory.CurrentFunction.Code.Add(dedentedLine);
                 else
-                {
                     memory.CurrentFunction = null;
-                    remainingCode.Add(line);
-                }
             }
         }
     }
@@ -243,12 +317,17 @@ namespace KizhiPart2
     {
         public readonly string Name;
         public readonly IList<string> Code;
+        public readonly int LineOffset;
         public int InstructionPointer { get; set; }
+        public int AbsolutePosition => LineOffset + InstructionPointer;
+        public string CurrentStatement => Code[InstructionPointer];
+        public bool EndReached => InstructionPointer == Code.Count;
 
-        public ExecutionContext(string name, IList<string> code)
+        public ExecutionContext(string name, IList<string> code, int lineOffset)
         {
             Name = name;
             Code = code;
+            LineOffset = lineOffset;
         }
     }
 
@@ -259,14 +338,22 @@ namespace KizhiPart2
         CodeAcquired
     }
 
-    public class Interpreter : IInterpreterCommandInterface
+    public enum RunOption
+    {
+        Run,
+        Step,
+        StepOver
+    }
+
+    public class Debugger : IInterpreterCommandInterface
     {
         private readonly TextWriter writer;
         private CommandList commands;
         private readonly Memory memory = new Memory();
         private Parser parser;
         private InterpreterState currentState = InterpreterState.NoCode;
-        private readonly Stack<ExecutionContext> stack = new Stack<ExecutionContext>(); 
+        private readonly Stack<ExecutionContext> stack = new Stack<ExecutionContext>();
+        private int statementsExecuted;
         TextWriter IInterpreterCommandInterface.Writer => writer;
         Memory IInterpreterCommandInterface.Memory => memory;
         Parser IInterpreterCommandInterface.Parser => parser;
@@ -278,7 +365,7 @@ namespace KizhiPart2
             set => currentState = value;
         }
 
-        public Interpreter(TextWriter writer)
+        public Debugger(TextWriter writer)
         {
             this.writer = writer;
             commands = new CommandList();
@@ -313,35 +400,46 @@ namespace KizhiPart2
                 case InterpreterState.NoCode:
                 case InterpreterState.CodeAcquired:
                     ExecuteStatement(line);
+                    statementsExecuted++;
                     break;
                 case InterpreterState.WaitingForCode:
                     var input = line.Split(new[] {"\r\n", "\r", "\n"}, StringSplitOptions.RemoveEmptyEntries);
-                    parser.FindFunctions(input, memory, out var code);
-                    memory.Code = code;
+                    parser.FindFunctions(input, memory, statementsExecuted);
+                    memory.Code = new ExecutionContext("main", input, 0);
                     currentState = InterpreterState.CodeAcquired;
                     break;
                 default:
                     throw new ArgumentOutOfRangeException();
             }
-            ExecutePendingCode();
         }
 
-        private void ExecutePendingCode()
+        void IInterpreterCommandInterface.Run(RunOption option)
         {
+            var statementsExecuted = 0;
+            var startingStackDepth = stack.Count;
             while (stack.Count > 0)
             {
                 var context = stack.Peek();
-                if (context.InstructionPointer == context.Code.Count)
+                if (context.EndReached)
                 {
+                    context.InstructionPointer = 0;
                     stack.Pop();
+                    if (option == RunOption.StepOver && stack.Count == startingStackDepth)
+                        break;
                     if (stack.Count == 0)
                         memory.Variables.Clear();
                     continue;
                 }
                 
-                var statement = context.Code[context.InstructionPointer];
+                var statement = context.CurrentStatement;
                 ExecuteStatement(statement);
+                if (option != RunOption.StepOver || stack.Count == startingStackDepth)
+                    statementsExecuted++;
                 context.InstructionPointer++;
+                if (option != RunOption.Run && statementsExecuted > 0 
+                    || memory.Breakpoints.Contains(context.AbsolutePosition) 
+                    && (option != RunOption.StepOver || stack.Count == startingStackDepth))
+                    break;
             }
         }
 
